@@ -132,6 +132,8 @@ jobs:
       alb_dns_name:     ${{ steps.tf_out.outputs.alb_dns_name }}
       ecr_backend_url:  ${{ steps.tf_out.outputs.ecr_backend_url }}
       ecr_worker_url:   ${{ steps.tf_out.outputs.ecr_worker_url }}
+      aws_account_id:   ${{ steps.tf_out.outputs.aws_account_id }}
+      vpc_id:           ${{ steps.tf_out.outputs.vpc_id }}
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS Credentials
@@ -171,18 +173,19 @@ jobs:
           echo "alb_dns_name=$(terraform output -raw alb_dns_name)"          >> $GITHUB_OUTPUT
           echo "ecr_backend_url=$(terraform output -raw ecr_backend_url)"    >> $GITHUB_OUTPUT
           echo "ecr_worker_url=$(terraform output -raw ecr_worker_url)"      >> $GITHUB_OUTPUT
+          # Extra outputs needed for AWS Load Balancer Controller
+          echo "aws_account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
+          echo "vpc_id=$(terraform output -raw vpc_id 2>/dev/null || echo '')" >> $GITHUB_OUTPUT
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 4 — Install ArgoCD on EKS exposed via AWS Network Load Balancer
+  # JOB 4 — Install cluster tools including AWS Load Balancer Controller
   #
-  # KEY DIFFERENCE from old version:
-  #   OLD → server.service.type=ClusterIP  (only via port-forward)
-  #   NEW → server.service.type=LoadBalancer (real public AWS NLB URL)
-  #
-  # After this job: open http://<NLB-hostname> in ANY browser = ArgoCD UI
+  # THIS IS THE KEY FIX — AWS Load Balancer Controller is what connects
+  # Kubernetes Ingress resources to the actual AWS ALB.
+  # Without it, pods are NEVER registered as ALB targets.
   # ═══════════════════════════════════════════════════════════════════════════
-  install-argocd:
-    name: Install ArgoCD (AWS LoadBalancer)
+  install-cluster-tools:
+    name: Install ArgoCD + AWS LB Controller + KEDA + Prometheus
     runs-on: ubuntu-latest
     needs: terraform-apply
     outputs:
@@ -204,22 +207,139 @@ jobs:
             --region ${{ env.AWS_REGION }} \
             --name ${{ needs.terraform-apply.outputs.eks_cluster_name }}
           kubectl get nodes
+          echo "EKS connected"
       - name: Create namespaces
         run: |
-          for ns in argocd argo worker keda monitoring; do
+          for ns in argocd argo worker keda monitoring kube-system; do
             kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
           done
       - name: Add Helm repos
         run: |
-          helm repo add argo               https://argoproj.github.io/argo-helm
-          helm repo add kedacore           https://kedacore.github.io/charts
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add argo                https://argoproj.github.io/argo-helm
+          helm repo add kedacore            https://kedacore.github.io/charts
+          helm repo add prometheus-community  https://prometheus-community.github.io/helm-charts
+          helm repo add eks                 https://aws.github.io/eks-charts
           helm repo update
 
-      # ArgoCD installed with service.type=LoadBalancer
-      # AWS automatically creates a Network Load Balancer and assigns a
-      # public DNS hostname — no port-forward ever needed again
-      - name: Install ArgoCD via Helm (service type LoadBalancer)
+      # ── STEP 1: Create IAM Service Account for AWS Load Balancer Controller ─
+      # The LB controller needs IAM permissions to create/manage ALBs on AWS.
+      # We attach an IAM policy directly to the EKS node role as a simple
+      # approach that works without IRSA (no OIDC required).
+      - name: Create IAM policy for AWS Load Balancer Controller
+        run: |
+          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+          ACCOUNT_ID="${{ needs.terraform-apply.outputs.aws_account_id }}"
+
+          # Download the official AWS LB Controller IAM policy
+          curl -sSL -o /tmp/alb-iam-policy.json \
+            https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.7.0/docs/install/iam_policy.json
+
+          # Create policy (idempotent — fails silently if already exists)
+          aws iam create-policy \
+            --policy-name "$POLICY_NAME" \
+            --policy-document file:///tmp/alb-iam-policy.json \
+            2>/dev/null || echo "Policy already exists"
+
+          # Attach to EKS node IAM role so controller pods can call AWS APIs
+          NODE_ROLE=$(aws eks describe-nodegroup \
+            --cluster-name ${{ needs.terraform-apply.outputs.eks_cluster_name }} \
+            --nodegroup-name ecommerce-node-group \
+            --query 'nodegroup.nodeRole' \
+            --output text | awk -F'/' '{print $NF}')
+
+          aws iam attach-role-policy \
+            --role-name "$NODE_ROLE" \
+            --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}" \
+            2>/dev/null || echo "Policy already attached"
+
+          echo "IAM policy attached to node role: $NODE_ROLE"
+
+      # ── STEP 2: Install AWS Load Balancer Controller via Helm ──────────────
+      # This controller watches for Kubernetes Ingress objects and
+      # automatically programs the AWS ALB to route traffic to pods.
+      # This is what makes "kubectl apply ingress.yaml" actually work on EKS.
+      - name: Install AWS Load Balancer Controller
+        run: |
+          # Create service account
+          kubectl create serviceaccount aws-load-balancer-controller \
+            -n kube-system --dry-run=client -o yaml | kubectl apply -f -
+
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            --namespace kube-system \
+            --set clusterName=${{ needs.terraform-apply.outputs.eks_cluster_name }} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region=${{ env.AWS_REGION }} \
+            --set vpcId=${{ needs.terraform-apply.outputs.vpc_id }} \
+            --wait --timeout=300s
+
+          echo "AWS Load Balancer Controller installed"
+          kubectl get deployment aws-load-balancer-controller -n kube-system
+
+      # ── STEP 3: Apply the Kubernetes Ingress resource ─────────────────────
+      # This Ingress tells the AWS LB Controller:
+      #   /        → frontend service (port 80)
+      #   /api/*   → backend service  (port 3000)
+      #   /health  → backend service  (port 3000)
+      # The controller reads this and programs the ALB target groups.
+      - name: Apply ALB Ingress resource
+        run: |
+          # Get the existing ALB ARN created by Terraform
+          ALB_ARN=$(aws elbv2 describe-load-balancers \
+            --query "LoadBalancers[?LoadBalancerName=='ecommerce-alb'].LoadBalancerArn" \
+            --output text 2>/dev/null || echo "")
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: ecommerce-ingress
+            namespace: default
+            annotations:
+              # Use the existing ALB created by Terraform (not a new one)
+              kubernetes.io/ingress.class: alb
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/load-balancer-name: ecommerce-alb
+              alb.ingress.kubernetes.io/healthcheck-path: /health
+              alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+              alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+              alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+              alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+              # WAF association (WAF already attached to ALB by Terraform)
+              alb.ingress.kubernetes.io/wafv2-acl-arn: ""
+          spec:
+            rules:
+              - http:
+                  paths:
+                    # API routes → backend (port 3000)
+                    - path: /api
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: backend
+                          port:
+                            number: 3000
+                    - path: /health
+                      pathType: Exact
+                      backend:
+                        service:
+                          name: backend
+                          port:
+                            number: 3000
+                    # All other routes → frontend (port 80)
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: frontend
+                          port:
+                            number: 80
+          EOF
+          echo "Ingress applied — AWS LB Controller will now register pods as ALB targets"
+
+      # ── STEP 4: Install ArgoCD with LoadBalancer ───────────────────────────
+      - name: Install ArgoCD (LoadBalancer)
         run: |
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd \
@@ -232,34 +352,25 @@ jobs:
             --set "server.service.annotations.service\.beta\.kubernetes\.io/aws-load-balancer-scheme"=internet-facing \
             --set "server.service.annotations.service\.beta\.kubernetes\.io/aws-load-balancer-cross-zone-load-balancing-enabled"=true \
             --wait --timeout=300s
-          echo "ArgoCD installed with AWS NLB"
-
-      - name: Wait for ArgoCD pods
-        run: |
           kubectl rollout status deployment/argocd-server      -n argocd --timeout=180s
           kubectl rollout status deployment/argocd-repo-server -n argocd --timeout=180s
-          kubectl rollout status statefulset/argocd-application-controller -n argocd --timeout=180s
+          echo "ArgoCD installed"
 
-      # Poll until AWS assigns the NLB hostname (takes ~2 min)
       - name: Get ArgoCD LoadBalancer hostname
         id: argocd_lb
         run: |
-          echo "Waiting for AWS NLB to assign hostname..."
           for i in $(seq 1 24); do
             HOSTNAME=$(kubectl get svc argocd-server -n argocd \
               -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
             if [ -n "$HOSTNAME" ] && [ "$HOSTNAME" != "null" ]; then
-              echo "ArgoCD LB hostname: $HOSTNAME"
+              echo "ArgoCD hostname: $HOSTNAME"
               echo "argocd_url=http://$HOSTNAME" >> $GITHUB_OUTPUT
               break
             fi
             echo "Attempt $i/24 — waiting 10s..."
             sleep 10
           done
-          if [ -z "$HOSTNAME" ]; then
-            kubectl describe svc argocd-server -n argocd
-            exit 1
-          fi
+          [ -z "$HOSTNAME" ] && kubectl describe svc argocd-server -n argocd && exit 1
 
       - name: Get ArgoCD admin password
         id: argocd_pass
@@ -268,6 +379,7 @@ jobs:
             -o jsonpath="{.data.password}" | base64 -d)
           echo "password=$PASS" >> $GITHUB_OUTPUT
 
+      # ── STEP 5: Install Argo Workflows ────────────────────────────────────
       - name: Install Argo Workflows (LoadBalancer)
         run: |
           helm upgrade --install argo-workflows argo/argo-workflows \
@@ -279,12 +391,14 @@ jobs:
             --set "server.serviceAnnotations.service\.beta\.kubernetes\.io/aws-load-balancer-scheme"=internet-facing \
             --wait --timeout=300s
 
+      # ── STEP 6: Install KEDA ──────────────────────────────────────────────
       - name: Install KEDA
         run: |
           helm upgrade --install keda kedacore/keda \
             --namespace keda --wait --timeout=300s
 
-      - name: Install kube-prometheus-stack (Grafana LoadBalancer)
+      # ── STEP 7: Install Prometheus + Grafana ──────────────────────────────
+      - name: Install kube-prometheus-stack (Grafana on LoadBalancer)
         run: |
           helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
@@ -295,22 +409,19 @@ jobs:
             --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
             --wait --timeout=600s
 
-      - name: Print ArgoCD URL
+      - name: Print ArgoCD credentials
         run: |
-          echo "===================================================="
-          echo " ArgoCD UI  : ${{ steps.argocd_lb.outputs.argocd_url }}"
-          echo " Username   : admin"
-          echo " Password   : ${{ steps.argocd_pass.outputs.password }}"
-          echo "===================================================="
+          echo "ArgoCD URL  : ${{ steps.argocd_lb.outputs.argocd_url }}"
+          echo "Username    : admin"
+          echo "Password    : ${{ steps.argocd_pass.outputs.password }}"
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 5 — Configure ArgoCD: register parthorookie/ecommercethreetierevent1edited
-  #         and create Applications pointing to helm/ecommerce + helm/worker
+  # JOB 5 — Configure ArgoCD: register repo + create Applications
   # ═══════════════════════════════════════════════════════════════════════════
   configure-argocd:
     name: Configure ArgoCD (register repo + create apps)
     runs-on: ubuntu-latest
-    needs: [terraform-apply, install-argocd]
+    needs: [terraform-apply, install-cluster-tools]
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS Credentials
@@ -331,10 +442,9 @@ jobs:
             https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
           chmod +x /usr/local/bin/argocd
 
-      # Wait for ArgoCD UI to be reachable before CLI commands
       - name: Wait for ArgoCD UI to respond
         run: |
-          URL="${{ needs.install-argocd.outputs.argocd_url }}"
+          URL="${{ needs.install-cluster-tools.outputs.argocd_url }}"
           for i in $(seq 1 20); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL" --max-time 10 2>/dev/null || echo "000")
             if [ "$STATUS" = "200" ] || [ "$STATUS" = "307" ] || [ "$STATUS" = "302" ]; then
@@ -344,36 +454,26 @@ jobs:
             sleep 15
           done
 
-      # Login using the public LoadBalancer URL — no port-forward needed
-      - name: Login to ArgoCD via LoadBalancer
+      - name: Login to ArgoCD
         run: |
-          ARGOCD_HOST=$(echo "${{ needs.install-argocd.outputs.argocd_url }}" | sed 's|http://||')
+          ARGOCD_HOST=$(echo "${{ needs.install-cluster-tools.outputs.argocd_url }}" | sed 's|http://||')
           argocd login "$ARGOCD_HOST" \
             --username admin \
-            --password "${{ needs.install-argocd.outputs.argocd_password }}" \
+            --password "${{ needs.install-cluster-tools.outputs.argocd_password }}" \
             --insecure --grpc-web
-          echo "Logged into ArgoCD at $ARGOCD_HOST"
 
-      # Register YOUR specific repo so ArgoCD can watch it
-      # Requires GH_PAT secret: GitHub → Settings → Developer settings
-      # → Personal access tokens → Classic → repo scope
-      - name: Register parthorookie/ecommercethreetierevent1edited in ArgoCD
+      - name: Register repo in ArgoCD
         run: |
-          ARGOCD_HOST=$(echo "${{ needs.install-argocd.outputs.argocd_url }}" | sed 's|http://||')
+          ARGOCD_HOST=$(echo "${{ needs.install-cluster-tools.outputs.argocd_url }}" | sed 's|http://||')
           argocd repo add ${{ env.GITHUB_REPO }} \
             --server "$ARGOCD_HOST" --insecure \
             --username parthorookie \
             --password "${{ secrets.GH_PAT }}" \
             --upsert
-          echo "Repo registered in ArgoCD"
 
-      # App 1: backend + frontend
-      # Watches: helm/ecommerce/ in parthorookie/ecommercethreetierevent1edited
-      # Any push to main that changes helm/ecommerce/values.yaml
-      # (e.g. new image tag from CI) → ArgoCD auto-deploys to EKS
       - name: Create ArgoCD App — ecommerce-backend
         run: |
-          ARGOCD_HOST=$(echo "${{ needs.install-argocd.outputs.argocd_url }}" | sed 's|http://||')
+          ARGOCD_HOST=$(echo "${{ needs.install-cluster-tools.outputs.argocd_url }}" | sed 's|http://||')
           argocd app create ecommerce-backend \
             --server "$ARGOCD_HOST" --insecure \
             --repo "${{ env.GITHUB_REPO }}" \
@@ -387,13 +487,10 @@ jobs:
             --helm-set "backend.image.repository=${{ needs.terraform-apply.outputs.ecr_backend_url }}" \
             --helm-set "frontend.image.repository=${{ needs.terraform-apply.outputs.ecr_backend_url }}" \
             --upsert
-          echo "ArgoCD App ecommerce-backend created"
 
-      # App 2: worker
-      # Watches: helm/worker/ in parthorookie/ecommercethreetierevent1edited
       - name: Create ArgoCD App — ecommerce-worker
         run: |
-          ARGOCD_HOST=$(echo "${{ needs.install-argocd.outputs.argocd_url }}" | sed 's|http://||')
+          ARGOCD_HOST=$(echo "${{ needs.install-cluster-tools.outputs.argocd_url }}" | sed 's|http://||')
           argocd app create ecommerce-worker \
             --server "$ARGOCD_HOST" --insecure \
             --repo "${{ env.GITHUB_REPO }}" \
@@ -406,21 +503,15 @@ jobs:
             --self-heal \
             --helm-set "image.repository=${{ needs.terraform-apply.outputs.ecr_worker_url }}" \
             --upsert
-          echo "ArgoCD App ecommerce-worker created"
 
       - name: Trigger initial sync
         run: |
-          ARGOCD_HOST=$(echo "${{ needs.install-argocd.outputs.argocd_url }}" | sed 's|http://||')
+          ARGOCD_HOST=$(echo "${{ needs.install-cluster-tools.outputs.argocd_url }}" | sed 's|http://||')
           argocd app sync ecommerce-backend --server "$ARGOCD_HOST" --insecure --async
           argocd app sync ecommerce-worker  --server "$ARGOCD_HOST" --insecure --async
 
-      - name: List ArgoCD apps
-        run: |
-          ARGOCD_HOST=$(echo "${{ needs.install-argocd.outputs.argocd_url }}" | sed 's|http://||')
-          argocd app list --server "$ARGOCD_HOST" --insecure
-
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 6 — Secrets + KEDA ScaledObject + Argo CronWorkflow
+  # JOB 6 — Secrets + KEDA + CronWorkflow
   # ═══════════════════════════════════════════════════════════════════════════
   deploy-supporting-resources:
     name: Secrets + KEDA + Argo CronWorkflow
@@ -477,18 +568,18 @@ jobs:
           kubectl apply -f k8s/keda-scaledobject.yaml
           kubectl get scaledobject -n worker
 
-      - name: Apply Argo CronWorkflow (DLQ reprocessor every 5 min)
+      - name: Apply Argo CronWorkflow
         run: |
           kubectl apply -f argo/dlq-cronworkflow.yaml
           kubectl get cronworkflow -n argo
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 7 — Wait for ArgoCD sync + verify all services on EKS
+  # JOB 7 — Verify: ArgoCD sync + ALB targets registered + app health check
   # ═══════════════════════════════════════════════════════════════════════════
   verify-deployment:
-    name: Verify ArgoCD Sync + EKS Health
+    name: Verify ArgoCD Sync + ALB Targets + App Health
     runs-on: ubuntu-latest
-    needs: [terraform-apply, install-argocd, configure-argocd, deploy-supporting-resources]
+    needs: [terraform-apply, install-cluster-tools, configure-argocd, deploy-supporting-resources]
     steps:
       - uses: actions/checkout@v4
       - name: Configure AWS Credentials
@@ -510,47 +601,97 @@ jobs:
           chmod +x /usr/local/bin/argocd
       - name: Login to ArgoCD
         run: |
-          ARGOCD_HOST=$(echo "${{ needs.install-argocd.outputs.argocd_url }}" | sed 's|http://||')
+          ARGOCD_HOST=$(echo "${{ needs.install-cluster-tools.outputs.argocd_url }}" | sed 's|http://||')
           argocd login "$ARGOCD_HOST" \
             --username admin \
-            --password "${{ needs.install-argocd.outputs.argocd_password }}" \
+            --password "${{ needs.install-cluster-tools.outputs.argocd_password }}" \
             --insecure --grpc-web
 
-      # Wait until ArgoCD finishes syncing both apps to EKS
       - name: Wait for ArgoCD sync — ecommerce-backend
         run: |
-          ARGOCD_HOST=$(echo "${{ needs.install-argocd.outputs.argocd_url }}" | sed 's|http://||')
+          ARGOCD_HOST=$(echo "${{ needs.install-cluster-tools.outputs.argocd_url }}" | sed 's|http://||')
           argocd app wait ecommerce-backend \
             --server "$ARGOCD_HOST" --insecure \
             --sync --health --timeout 300
-          echo "ecommerce-backend: Synced + Healthy on EKS"
+          echo "ecommerce-backend: Synced + Healthy"
 
       - name: Wait for ArgoCD sync — ecommerce-worker
         run: |
-          ARGOCD_HOST=$(echo "${{ needs.install-argocd.outputs.argocd_url }}" | sed 's|http://||')
+          ARGOCD_HOST=$(echo "${{ needs.install-cluster-tools.outputs.argocd_url }}" | sed 's|http://||')
           argocd app wait ecommerce-worker \
             --server "$ARGOCD_HOST" --insecure \
             --sync --health --timeout 300
-          echo "ecommerce-worker: Synced + Healthy on EKS"
+          echo "ecommerce-worker: Synced + Healthy"
+
+      # ── Verify ALB target groups have healthy targets ─────────────────────
+      # This confirms pods are actually registered and healthy in the ALB.
+      # If targets are empty here, the Ingress or LB Controller has an issue.
+      - name: Verify ALB target groups have registered targets
+        run: |
+          echo "=== Checking ALB target group health ==="
+          ALB_ARN=$(aws elbv2 describe-load-balancers \
+            --query "LoadBalancers[?LoadBalancerName=='ecommerce-alb'].LoadBalancerArn" \
+            --output text)
+
+          TG_ARNS=$(aws elbv2 describe-target-groups \
+            --load-balancer-arn "$ALB_ARN" \
+            --query "TargetGroups[*].TargetGroupArn" \
+            --output text)
+
+          for TG_ARN in $TG_ARNS; do
+            TG_NAME=$(aws elbv2 describe-target-groups \
+              --target-group-arns "$TG_ARN" \
+              --query "TargetGroups[0].TargetGroupName" \
+              --output text)
+            HEALTH=$(aws elbv2 describe-target-health \
+              --target-group-arn "$TG_ARN" \
+              --query "TargetHealthDescriptions[*].TargetHealth.State" \
+              --output text)
+            COUNT=$(aws elbv2 describe-target-health \
+              --target-group-arn "$TG_ARN" \
+              --query "length(TargetHealthDescriptions)" \
+              --output text)
+            echo "Target Group: $TG_NAME | Targets: $COUNT | States: $HEALTH"
+          done
 
       - name: Verify all EKS resources
         run: |
-          echo "=== Nodes ===" && kubectl get nodes
-          echo "=== All pods ===" && kubectl get pods -A
-          echo "=== LoadBalancer services ===" && kubectl get svc -A --field-selector spec.type=LoadBalancer
+          echo "=== Pods ===" && kubectl get pods -A
+          echo "=== Ingress ===" && kubectl get ingress -n default
+          echo "=== Services ===" && kubectl get svc -A
+          echo "=== LB Controller ===" && kubectl get deployment aws-load-balancer-controller -n kube-system
           echo "=== KEDA ScaledObject ===" && kubectl get scaledobject -n worker
           echo "=== Argo CronWorkflow ===" && kubectl get cronworkflow -n argo
-          ARGOCD_HOST=$(echo "${{ needs.install-argocd.outputs.argocd_url }}" | sed 's|http://||')
-          echo "=== ArgoCD apps ===" && argocd app list --server "$ARGOCD_HOST" --insecure
 
-      - name: Health check — app via ALB
+      # ── App health check via ALB ───────────────────────────────────────────
+      - name: Health check — ecommerce app via ALB
         run: |
           ALB="${{ needs.terraform-apply.outputs.alb_dns_name }}"
+          echo "Checking http://$ALB/health ..."
           for i in $(seq 1 18); do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://$ALB/health" --max-time 10 2>/dev/null || echo "000")
-            [ "$STATUS" = "200" ] && echo "App healthy at http://$ALB" && break
-            echo "Attempt $i/18: HTTP $STATUS — waiting 10s..." && sleep 10
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              "http://$ALB/health" --max-time 10 2>/dev/null || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "App is LIVE and healthy at http://$ALB"
+              break
+            fi
+            echo "Attempt $i/18: HTTP $STATUS — waiting 10s..."
+            sleep 10
           done
+          [ "$STATUS" != "200" ] && kubectl describe ingress ecommerce-ingress -n default && exit 1
+
+      # ── Read Grafana credentials directly from K8s secret ─────────────────
+      - name: Get Grafana credentials from K8s secret
+        run: |
+          GRAFANA_USER=$(kubectl get secret prometheus-grafana -n monitoring \
+            -o jsonpath="{.data.admin-user}" | base64 -d 2>/dev/null || echo "admin")
+          GRAFANA_PASS=$(kubectl get secret prometheus-grafana -n monitoring \
+            -o jsonpath="{.data.admin-password}" | base64 -d 2>/dev/null || echo "check-GRAFANA_PASSWORD-secret")
+          GRAFANA_HOST=$(kubectl get svc prometheus-grafana -n monitoring \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          echo "Grafana URL  : http://$GRAFANA_HOST"
+          echo "Grafana User : $GRAFANA_USER"
+          echo "Grafana Pass : $GRAFANA_PASS"
 
       - name: Print all access URLs
         run: |
@@ -558,16 +699,27 @@ jobs:
             -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
           GRAFANA=$(kubectl get svc prometheus-grafana -n monitoring \
             -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
-          echo "========================================================"
-          echo " DEPLOYMENT COMPLETE"
-          echo "========================================================"
-          echo " App (ALB)        : http://${{ needs.terraform-apply.outputs.alb_dns_name }}"
-          echo " ArgoCD (NLB)     : ${{ needs.install-argocd.outputs.argocd_url }}"
-          echo "   Username       : admin"
-          echo "   Password       : ${{ needs.install-argocd.outputs.argocd_password }}"
-          echo " Argo Workflows   : http://$ARGO_WF"
-          echo " Grafana (NLB)    : http://$GRAFANA  (admin / ${{ secrets.GRAFANA_PASSWORD }})"
-          echo "========================================================"
-          echo " GitOps: push to main -> ArgoCD auto-syncs to EKS"
+          GRAFANA_PASS=$(kubectl get secret prometheus-grafana -n monitoring \
+            -o jsonpath="{.data.admin-password}" | base64 -d 2>/dev/null || echo "see-GRAFANA_PASSWORD-secret")
+          echo "================================================================"
+          echo " FULL DEPLOYMENT COMPLETE"
+          echo "================================================================"
+          echo " Ecommerce App (AWS ALB + WAF)"
+          echo "   http://${{ needs.terraform-apply.outputs.alb_dns_name }}"
+          echo ""
+          echo " ArgoCD UI (AWS NLB)"
+          echo "   URL      : ${{ needs.install-cluster-tools.outputs.argocd_url }}"
+          echo "   Username : admin"
+          echo "   Password : ${{ needs.install-cluster-tools.outputs.argocd_password }}"
+          echo ""
+          echo " Argo Workflows UI (AWS NLB)"
+          echo "   http://$ARGO_WF"
+          echo ""
+          echo " Grafana (AWS NLB)"
+          echo "   URL      : http://$GRAFANA"
+          echo "   Username : admin"
+          echo "   Password : $GRAFANA_PASS"
+          echo "================================================================"
+          echo " GitOps active: push to main -> ArgoCD auto-deploys to EKS"
           echo " Repo: https://github.com/parthorookie/ecommercethreetierevent1edited"
-          echo "========================================================"
+          echo "================================================================"
