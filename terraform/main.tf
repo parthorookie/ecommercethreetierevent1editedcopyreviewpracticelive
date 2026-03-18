@@ -41,7 +41,8 @@ module "rabbitmq_ec2" {
   project_name       = var.project_name
   environment        = var.environment
   vpc_id             = module.vpc.vpc_id
-  private_subnet_id  = module.vpc.private_subnet_ids[0]
+  public_subnet_id = module.vpc.public_subnet_ids[0]
+  operator_ip_cidr = var.operator_ip_cidr
   instance_type      = var.rabbitmq_instance_type
   ami_id             = var.rabbitmq_ami
   eks_sg_id          = module.eks.node_security_group_id

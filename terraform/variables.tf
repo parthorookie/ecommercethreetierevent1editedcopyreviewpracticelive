@@ -77,3 +77,7 @@ variable "rabbitmq_ami" {
   type        = string
   default     = "ami-0f58b397bc5c1f2e8"
 }
+variable "operator_ip_cidr" {
+  description = "Your public IP for RabbitMQ UI access e.g. 203.0.113.45/32"
+  type        = string
+}
