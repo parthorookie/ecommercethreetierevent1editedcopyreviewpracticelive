@@ -10,7 +10,6 @@ volumes:
 
 services:
 
-  # ── PostgreSQL ─────────────────────────────────────────
   postgres:
     image: postgres:15-alpine
     networks: [ecommerce]
@@ -28,7 +27,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── RabbitMQ ───────────────────────────────────────────
   rabbitmq:
     image: rabbitmq:3.12-management
     hostname: rabbitmq
@@ -47,7 +45,6 @@ services:
       timeout: 10s
       retries: 5
 
-  # ── Backend API ────────────────────────────────────────
   backend:
     build: ./app/backend
     networks: [ecommerce]
@@ -69,7 +66,6 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # ── Worker (NO deploy, NO container_name) ──────────────
   worker:
     build: ./app/worker
     networks: [ecommerce]
@@ -91,17 +87,16 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  # ── Frontend ───────────────────────────────────────────
   frontend:
     build: ./app/frontend
     networks: [ecommerce]
     ports:
-      - "8080:80"   # ✅ changed from 80 → avoids permission issues
+      - "8080:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_started   # ✅ IMPORTANT FIX
     restart: unless-stopped
 
-  # ── Prometheus ─────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.48.1
     networks: [ecommerce]
@@ -114,7 +109,6 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
     restart: unless-stopped
 
-  # ── Grafana ────────────────────────────────────────────
   grafana:
     image: grafana/grafana:10.2.2
     networks: [ecommerce]
