@@ -26,51 +26,7 @@ env:
 jobs:
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 1 — Bootstrap S3 state bucket
-  # ═══════════════════════════════════════════════════════════════════════════
-  bootstrap-state:
-    name: Bootstrap S3 State Bucket
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ env.AWS_REGION }}
-      - name: Create S3 bucket with native Object Lock
-        run: |
-          BUCKET="ecommerce-terraform-state-prod"
-          REGION="${{ env.AWS_REGION }}"
-          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
-            echo "Bucket $BUCKET already exists"
-          else
-            aws s3api create-bucket \
-              --bucket "$BUCKET" --region "$REGION" \
-              --create-bucket-configuration LocationConstraint="$REGION" \
-              --object-lock-enabled-for-bucket
-            aws s3api put-bucket-versioning \
-              --bucket "$BUCKET" \
-              --versioning-configuration Status=Enabled
-            aws s3api put-object-lock-configuration \
-              --bucket "$BUCKET" \
-              --object-lock-configuration \
-              '{"ObjectLockEnabled":"Enabled","Rule":{"DefaultRetention":{"Mode":"GOVERNANCE","Days":30}}}'
-            aws s3api put-bucket-encryption \
-              --bucket "$BUCKET" \
-              --server-side-encryption-configuration \
-              '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-            aws s3api put-public-access-block \
-              --bucket "$BUCKET" \
-              --public-access-block-configuration \
-              "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
-            echo "Bucket created with Object Lock GOVERNANCE 30 days"
-          fi
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 2 — Terraform Plan
+  # JOB 1 — Terraform Plan
   # ═══════════════════════════════════════════════════════════════════════════
   terraform-plan:
     name: Terraform Plan
@@ -118,7 +74,7 @@ jobs:
           retention-days: 1
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 3 — Terraform Apply
+  # JOB 2 — Terraform Apply
   # ═══════════════════════════════════════════════════════════════════════════
   terraform-apply:
     name: Terraform Apply
@@ -180,7 +136,7 @@ jobs:
           echo "vpc_id=$(terraform output -raw vpc_id 2>/dev/null || echo '')" >> $GITHUB_OUTPUT
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 4 — Install cluster tools: AWS LB Controller + ArgoCD + KEDA + Prometheus
+  # JOB 3 — Install cluster tools: AWS LB Controller + ArgoCD + KEDA + Prometheus
   # ═══════════════════════════════════════════════════════════════════════════
   install-cluster-tools:
     name: Install ArgoCD + AWS LB Controller + KEDA + Prometheus
@@ -375,7 +331,7 @@ jobs:
           echo "Password    : ${{ steps.argocd_pass.outputs.password }}"
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 5 — Configure ArgoCD: register repo + create Applications
+  # JOB 4 — Configure ArgoCD: register repo + create Applications
   # ═══════════════════════════════════════════════════════════════════════════
   configure-argocd:
     name: Configure ArgoCD (register repo + create apps)
@@ -470,7 +426,7 @@ jobs:
           argocd app sync ecommerce-worker  --server "$ARGOCD_HOST" --insecure --async
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 6 — Secrets + KEDA + CronWorkflow
+  # JOB 5 — Secrets + KEDA + CronWorkflow
   # ═══════════════════════════════════════════════════════════════════════════
   deploy-supporting-resources:
     name: Secrets + KEDA + Argo CronWorkflow
@@ -533,7 +489,7 @@ jobs:
           kubectl get cronworkflow -n argo
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 7 — Verify: ArgoCD sync + ALB targets + app health + print ALL URLs
+  # JOB 6 — Verify: ArgoCD sync + ALB targets + app health + print ALL URLs
   # ═══════════════════════════════════════════════════════════════════════════
   verify-deployment:
     name: Verify ArgoCD Sync + ALB Targets + App Health
@@ -645,7 +601,6 @@ jobs:
           echo "Grafana User : $GRAFANA_USER"
           echo "Grafana Pass : $GRAFANA_PASS"
 
-      # ── FINAL STEP: Print ALL access URLs including RabbitMQ public IP ─────
       - name: Print all access URLs
         run: |
           ARGO_WF=$(kubectl get svc argo-workflows-server -n argo \
