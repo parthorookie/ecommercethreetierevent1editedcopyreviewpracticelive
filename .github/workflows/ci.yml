@@ -125,6 +125,11 @@ jobs:
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          with:
+          args: >
+            -Dsonar.projectKey=parthorookie_ecommercethreetierevent1editedcopyreviewpracticelive
+            -Dsonar.organization=parthorookie
+            -Dsonar.sources=app
 
   # ─────────────────────────────────────────────
   # JOB 3: Dependency Scanning - Snyk
