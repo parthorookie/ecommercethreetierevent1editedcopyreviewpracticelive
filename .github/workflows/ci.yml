@@ -371,12 +371,14 @@ jobs:
           sed -i "s|tag:.*|tag: \"$TAG\"|g" helm/worker/values.yaml
 
       - name: Commit updated Helm values (GitOps)
+        env:
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
         run: |
-          git config --local user.email "github-actions@github.com"
-          git config --local user.name "GitHub Actions"
-          git add helm/ecommerce/values.yaml helm/worker/values.yaml
-          git diff --staged --quiet || git commit -m "ci: update image tags to ${{ steps.meta.outputs.sha_short }} [skip ci]"
-          git push
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "github-actions"
+          git add helm/ecommerce/values.yaml 
+          git diff --staged --quiet || git commit -m "ci: update image tags to $TAG [skip ci]"
+              git push https://x-access-token:${GHCR_PAT}@github.com/${{ github.repository }}.git HEAD:main
 
   ecs-deploy:
     name: Deploy Worker to ECS Fargate
