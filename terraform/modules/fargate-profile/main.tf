@@ -87,16 +87,7 @@ resource "aws_ecs_task_definition" "worker" {
       { name = "DB_HOST",      value = var.db_host }
     ]
 
-    # ✅ CloudWatch auto-create (no Terraform resource needed)
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = "/ecs/${var.project_name}/worker"
-        "awslogs-region"        = var.aws_region
-        "awslogs-stream-prefix" = "worker"
-      }
-    }
-  }])
+   
 
   tags = {
     Name        = "${var.project_name}-worker"
