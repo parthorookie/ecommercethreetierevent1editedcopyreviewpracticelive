@@ -118,16 +118,8 @@ jobs:
             -Dsonar.projectKey=parthorookie_ecommercethreetierevent1editedcopyreviewpracticelive
             -Dsonar.sources=app
             -Dsonar.exclusions=**/node_modules/**,**/coverage/**
-            -Dsonar.javascript.lcov.reportPaths=app/backend/coverage/lcov.info,app/worker/coverage/lcov.info
-
-           
             
-
-  
-        
            
-
-
   # ─────────────────────────────────────────────
   # JOB 3: Dependency Scanning - Snyk
   # ─────────────────────────────────────────────
