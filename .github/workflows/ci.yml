@@ -119,7 +119,7 @@ jobs:
             -Dsonar.projectName="E-Commerce Platform"
             -Dsonar.sources=app
             -Dsonar.exclusions=**/node_modules/**,**/coverage/**
-            -Dsonar.javascript.lcov.reportPaths=app/backend/coverage/lcov.info,app/worker/coverage/lcov.info
+            
 
       - name: SonarQube Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@master
