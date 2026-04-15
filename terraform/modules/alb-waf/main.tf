@@ -102,7 +102,7 @@ resource "aws_lb_listener_rule" "api" {
 }
 
 # WAF v2 Web ACL with XSS 
-resource "aws_wafv2_web_acl" "this" {
+resource "aws_wafv2_web_acl" "main" {
   name        = "${var.environment}-waf"
   description = "WAF for ALB"
   scope       = "REGIONAL"

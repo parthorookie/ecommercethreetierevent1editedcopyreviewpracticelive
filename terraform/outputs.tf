@@ -7,7 +7,7 @@ output "rabbitmq_private_ip" {
 }
 
 output "aurora_endpoint" {
-  value = module.aurora.endpoint
+  value = module.aurora.cluster_endpoint
 }
 
 output "alb_dns_name" {
