@@ -24,6 +24,7 @@ env:
   GITHUB_REPO:      https://github.com/parthorookie/ecommercethreetierevent1editedcopyreviewpracticelive
 
 jobs:
+
   # ═══════════════════════════════════════════════════════════════════════════
   # JOB 1 — Terraform Reconcile & Plan
   # ═══════════════════════════════════════════════════════════════════════════
@@ -32,10 +33,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:      ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
@@ -52,49 +54,107 @@ jobs:
             -backend-config="key=prod/terraform.tfstate" \
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="encrypt=true" \
-            -backend-config="use_lockfile=true" 
+            -backend-config="use_lockfile=true"
 
       - name: Reconcile and Plan
         working-directory: ${{ env.TF_DIR }}
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          OPERATOR_IP: ${{ secrets.OPERATOR_IP_CIDR }}
         run: |
-          echo "### 1. Starting State Reconciliation (Importing existing resources) ###"
-          
-          # IAM Roles Check
-          ROLES=("ecommerce-eks-cluster-role" "ecommerce-eks-node-role" "ecommerce-worker-task-execution-role" "ecommerce-worker-task-role" "ecommerce-rabbitmq-ec2-role")
-          TF_PATHS=("module.eks.aws_iam_role.eks_cluster" "module.eks.aws_iam_role.eks_nodes" "module.fargate-profile.aws_iam_role.worker_task_execution" "module.fargate-profile.aws_iam_role.worker_task" "module.rabbitmq_ec2.aws_iam_role.rabbitmq_ec2")
+          echo "### 1. Starting State Reconciliation ###"
+
+          import_if_exists() {
+            local TF_ADDR=$1
+            local AWS_ID=$2
+            local CHECK_CMD=$3
+
+            echo "Checking for $AWS_ID..."
+            if eval "$CHECK_CMD" >/dev/null 2>&1; then
+              echo "Resource $AWS_ID exists in AWS. Checking Terraform state..."
+              if ! terraform state show "$TF_ADDR" >/dev/null 2>&1; then
+                echo "Importing $AWS_ID into $TF_ADDR..."
+                terraform import \
+                  -var="db_password=${DB_PASSWORD}" \
+                  -var="operator_ip_cidr=${OPERATOR_IP}" \
+                  "$TF_ADDR" "$AWS_ID" || echo "Import failed, continuing..."
+              else
+                echo "$TF_ADDR is already in state. Skipping."
+              fi
+            else
+              echo "$AWS_ID does not exist in AWS. Terraform will create it."
+            fi
+          }
+
+          # --- IAM Roles ---
+          ROLES=(
+            "ecommerce-eks-cluster-role"
+            "ecommerce-eks-node-role"
+            "ecommerce-worker-task-execution-role"
+            "ecommerce-worker-task-role"
+            "ecommerce-rabbitmq-ec2-role"
+          )
+          TF_ROLES=(
+            "module.eks.aws_iam_role.eks_cluster"
+            "module.eks.aws_iam_role.eks_nodes"
+            "module.fargate-profile.aws_iam_role.worker_task_execution"
+            "module.fargate-profile.aws_iam_role.worker_task"
+            "module.rabbitmq_ec2.aws_iam_role.rabbitmq_ec2"
+          )
 
           for i in "${!ROLES[@]}"; do
-            if aws iam get-role --role-name "${ROLES[$i]}" >/dev/null 2>&1; then
-              echo "Role ${ROLES[$i]} exists. Importing to ${TF_PATHS[$i]}..."
-              terraform import -var="db_password=${{ secrets.DB_PASSWORD }}" -var="operator_ip_cidr=${{ secrets.OPERATOR_IP_CIDR }}" "${TF_PATHS[$i]}" "${ROLES[$i]}" || echo "Skipping: Already managed in state."
-            fi
+            import_if_exists \
+              "${TF_ROLES[$i]}" \
+              "${ROLES[$i]}" \
+              "aws iam get-role --role-name ${ROLES[$i]}"
           done
 
-          # ECR Repositories Check
-          REPOS=("ecommerce-backend" "ecommerce-worker" "ecommerce-frontend")
-          TF_ECR=("module.ecr.aws_ecr_repository.backend" "module.ecr.aws_ecr_repository.worker" "module.ecr.aws_ecr_repository.frontend")
+          # --- ECR Repositories ---
+          REPOS=(
+            "ecommerce-backend"
+            "ecommerce-worker"
+            "ecommerce-frontend"
+          )
+          TF_ECR=(
+            "module.ecr.aws_ecr_repository.backend"
+            "module.ecr.aws_ecr_repository.worker"
+            "module.ecr.aws_ecr_repository.frontend"
+          )
 
           for i in "${!REPOS[@]}"; do
-            if aws ecr describe-repositories --repository-names "${REPOS[$i]}" >/dev/null 2>&1; then
-              echo "ECR ${REPOS[$i]} exists. Importing..."
-              terraform import -var="db_password=${{ secrets.DB_PASSWORD }}" -var="operator_ip_cidr=${{ secrets.OPERATOR_IP_CIDR }}" "${TF_ECR[$i]}" "${REPOS[$i]}" || echo "Skipping: Already managed in state."
-            fi
+            import_if_exists \
+              "${TF_ECR[$i]}" \
+              "${REPOS[$i]}" \
+              "aws ecr describe-repositories --repository-names ${REPOS[$i]}"
           done
 
-          # Security Group Check
-          ALB_SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=ecommerce-alb-sg" --query "SecurityGroups[0].GroupId" --output text)
-          if [ "$ALB_SG_ID" != "None" ] && [ -n "$ALB_SG_ID" ]; then
-            echo "ALB SG exists ($ALB_SG_ID). Importing..."
-            terraform import -var="db_password=${{ secrets.DB_PASSWORD }}" -var="operator_ip_cidr=${{ secrets.OPERATOR_IP_CIDR }}" module.alb_waf.aws_security_group.alb "$ALB_SG_ID" || echo "Skipping: Already managed in state."
-          fi
+          # --- Target Groups ---
+          TGS=(
+            "ecommerce-backend-tg"
+            "ecommerce-frontend-tg"
+          )
+          TF_TGS=(
+            "module.alb_waf.aws_lb_target_group.backend"
+            "module.alb_waf.aws_lb_target_group.frontend"
+          )
+
+          for i in "${!TGS[@]}"; do
+            TG_ARN=$(aws elbv2 describe-target-groups \
+              --names "${TGS[$i]}" \
+              --query 'TargetGroups[0].TargetGroupArn' \
+              --output text 2>/dev/null)
+            if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+              import_if_exists "${TF_TGS[$i]}" "$TG_ARN" "true"
+            fi
+          done
 
           echo "### 2. Generating Fresh Plan ###"
           terraform plan \
             -var="region=${{ env.AWS_REGION }}" \
-            -var="db_password=${{ secrets.DB_PASSWORD }}" \
+            -var="db_password=${DB_PASSWORD}" \
             -var="project_name=ecommerce" \
             -var="environment=prod" \
-            -var="operator_ip_cidr=${{ secrets.OPERATOR_IP_CIDR }}" \
+            -var="operator_ip_cidr=${OPERATOR_IP}" \
             -out=tfplan
 
       - name: Upload plan artifact
@@ -125,10 +185,11 @@ jobs:
       vpc_id:             ${{ steps.tf_out.outputs.vpc_id }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:      ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
@@ -169,7 +230,7 @@ jobs:
           echo "ecr_backend_url=$(terraform output -raw ecr_backend_url)"       >> $GITHUB_OUTPUT
           echo "ecr_worker_url=$(terraform output -raw ecr_worker_url)"         >> $GITHUB_OUTPUT
           echo "aws_account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
-          echo "vpc_id=$(terraform output -raw vpc_id 2>/dev/null || echo '')" >> $GITHUB_OUTPUT
+          echo "vpc_id=$(terraform output -raw vpc_id 2>/dev/null || echo '')"  >> $GITHUB_OUTPUT
 
   # ═══════════════════════════════════════════════════════════════════════════
   # JOB 3 — Install cluster tools: AWS LB Controller + ArgoCD + KEDA + Prometheus
@@ -183,14 +244,17 @@ jobs:
       argocd_password: ${{ steps.argocd_pass.outputs.password }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
+
       - uses: azure/setup-kubectl@v3
       - uses: azure/setup-helm@v4
+
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
@@ -198,44 +262,52 @@ jobs:
             --name ${{ needs.terraform-apply.outputs.eks_cluster_name }}
           kubectl get nodes
           echo "EKS connected"
+
       - name: Create namespaces
         run: |
           for ns in argocd argo worker keda monitoring kube-system; do
             kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
           done
+
       - name: Add Helm repos
         run: |
-          helm repo add argo                  https://argoproj.github.io/argo-helm
-          helm repo add kedacore              https://kedacore.github.io/charts
-          helm repo add prometheus-community  https://prometheus-community.github.io/helm-charts
-          helm repo add eks                   https://aws.github.io/eks-charts
+          helm repo add argo                 https://argoproj.github.io/argo-helm
+          helm repo add kedacore             https://kedacore.github.io/charts
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add eks                  https://aws.github.io/eks-charts
           helm repo update
 
       - name: Create IAM policy for AWS Load Balancer Controller
         run: |
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
           ACCOUNT_ID="${{ needs.terraform-apply.outputs.aws_account_id }}"
+
           curl -sSL -o /tmp/alb-iam-policy.json \
             https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.7.0/docs/install/iam_policy.json
+
           aws iam create-policy \
             --policy-name "$POLICY_NAME" \
             --policy-document file:///tmp/alb-iam-policy.json \
             2>/dev/null || echo "Policy already exists"
+
           NODE_ROLE=$(aws eks describe-nodegroup \
             --cluster-name ${{ needs.terraform-apply.outputs.eks_cluster_name }} \
             --nodegroup-name ecommerce-node-group \
             --query 'nodegroup.nodeRole' \
             --output text | awk -F'/' '{print $NF}')
+
           aws iam attach-role-policy \
             --role-name "$NODE_ROLE" \
             --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}" \
             2>/dev/null || echo "Policy already attached"
+
           echo "IAM policy attached to node role: $NODE_ROLE"
 
       - name: Install AWS Load Balancer Controller
         run: |
           kubectl create serviceaccount aws-load-balancer-controller \
             -n kube-system --dry-run=client -o yaml | kubectl apply -f -
+
           helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
             --namespace kube-system \
             --set clusterName=${{ needs.terraform-apply.outputs.eks_cluster_name }} \
@@ -244,6 +316,7 @@ jobs:
             --set region=${{ env.AWS_REGION }} \
             --set vpcId=${{ needs.terraform-apply.outputs.vpc_id }} \
             --wait --timeout=300s
+
           echo "AWS Load Balancer Controller installed"
           kubectl get deployment aws-load-balancer-controller -n kube-system
 
@@ -306,6 +379,7 @@ jobs:
             --set "server.service.annotations.service\.beta\.kubernetes\.io/aws-load-balancer-scheme"=internet-facing \
             --set "server.service.annotations.service\.beta\.kubernetes\.io/aws-load-balancer-cross-zone-load-balancing-enabled"=true \
             --wait --timeout=300s
+
           kubectl rollout status deployment/argocd-server      -n argocd --timeout=180s
           kubectl rollout status deployment/argocd-repo-server -n argocd --timeout=180s
           echo "ArgoCD installed"
@@ -375,18 +449,22 @@ jobs:
     needs: [terraform-apply, install-cluster-tools]
     steps:
       - uses: actions/checkout@v4
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
+
       - uses: azure/setup-kubectl@v3
+
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
             --name ${{ needs.terraform-apply.outputs.eks_cluster_name }}
+
       - name: Install ArgoCD CLI
         run: |
           curl -sSL -o /usr/local/bin/argocd \
@@ -399,7 +477,8 @@ jobs:
           for i in $(seq 1 20); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL" --max-time 10 2>/dev/null || echo "000")
             if [ "$STATUS" = "200" ] || [ "$STATUS" = "307" ] || [ "$STATUS" = "302" ]; then
-              echo "ArgoCD UI responding (HTTP $STATUS)"; break
+              echo "ArgoCD UI responding (HTTP $STATUS)"
+              break
             fi
             echo "Attempt $i/20: HTTP $STATUS — waiting 15s..."
             sleep 15
@@ -470,13 +549,16 @@ jobs:
     needs: [terraform-apply, configure-argocd]
     steps:
       - uses: actions/checkout@v4
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
+
       - uses: azure/setup-kubectl@v3
+
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
@@ -533,23 +615,28 @@ jobs:
     needs: [terraform-apply, install-cluster-tools, configure-argocd, deploy-supporting-resources]
     steps:
       - uses: actions/checkout@v4
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
+
       - uses: azure/setup-kubectl@v3
+
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig \
             --region ${{ env.AWS_REGION }} \
             --name ${{ needs.terraform-apply.outputs.eks_cluster_name }}
+
       - name: Install ArgoCD CLI
         run: |
           curl -sSL -o /usr/local/bin/argocd \
             https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
           chmod +x /usr/local/bin/argocd
+
       - name: Login to ArgoCD
         run: |
           ARGOCD_HOST=$(echo "${{ needs.install-cluster-tools.outputs.argocd_url }}" | sed 's|http://||')
@@ -672,5 +759,5 @@ jobs:
           echo ""
           echo "================================================================"
           echo " GitOps active: push to main -> ArgoCD auto-deploys to EKS"
-          echo " Repo: https://github.com/parthorookie/ecommercethreetierevent1edited"
+          echo " Repo: ${{ env.GITHUB_REPO }}"
           echo "================================================================"
