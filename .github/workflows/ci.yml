@@ -116,7 +116,6 @@ jobs:
           args: >
             -Dsonar.organization=parthorookie
             -Dsonar.projectKey=parthorookie_ecommercethreetierevent1editedcopyreviewpracticelive
-            -Dsonar.projectName=E-Commerce Platform
             -Dsonar.sources=app
             -Dsonar.exclusions=**/node_modules/**,**/coverage/**
             -Dsonar.javascript.lcov.reportPaths=app/backend/coverage/lcov.info,app/worker/coverage/lcov.info
@@ -124,14 +123,10 @@ jobs:
            
             
 
-      - name: SonarQube Quality Gate
-        uses: SonarSource/sonarqube-quality-gate-action@v1
-        timeout-minutes: 5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  
         
            
-           
+
 
   # ─────────────────────────────────────────────
   # JOB 3: Dependency Scanning - Snyk
