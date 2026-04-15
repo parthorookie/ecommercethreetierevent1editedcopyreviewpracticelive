@@ -21,7 +21,7 @@ env:
   AWS_REGION:       ap-south-1
   TF_DIR:           terraform
   EKS_CLUSTER_NAME: ecommerce-eks
-  GITHUB_REPO:      https://github.com/parthorookie/ecommercethreetierevent1edited
+  GITHUB_REPO:      https://github.com/parthorookie/ecommercethreetierevent1editedcopyreviewpracticelive
 
 jobs:
 
