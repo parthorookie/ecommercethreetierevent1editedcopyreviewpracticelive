@@ -321,6 +321,18 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+        # ✅ NEW STEP (FIX)
+      -  name: Ensure ECR repositories exist
+         run: |
+           aws ecr describe-repositories --repository-names $ECR_BACKEND_REPO || \
+           aws ecr create-repository --repository-name $ECR_BACKEND_REPO
+
+           aws ecr describe-repositories --repository-names $ECR_WORKER_REPO || \
+           aws ecr create-repository --repository-name $ECR_WORKER_REPO
+
+           aws ecr describe-repositories --repository-names $ECR_FRONTEND_REPO || \
+           aws ecr create-repository --repository-name $ECR_FRONTEND_REPO
+
       - name: Tag and push backend
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
