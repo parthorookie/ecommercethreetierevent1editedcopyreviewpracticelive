@@ -3,7 +3,7 @@ replicaCount: 2
 backend:
   image:
     repository: ""   # set by CI: <account>.dkr.ecr.ap-south-1.amazonaws.com/ecommerce-backend
-    tag: "7064c87"
+    tag: "04a78dd"
     pullPolicy: Always
   port: 3000
   resources:
@@ -20,7 +20,7 @@ backend:
 frontend:
   image:
     repository: ""   # set by CI
-    tag: "7064c87"
+    tag: "04a78dd"
     pullPolicy: Always
   port: 80
   resources:
