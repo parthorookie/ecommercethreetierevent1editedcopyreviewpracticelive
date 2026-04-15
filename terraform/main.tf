@@ -58,7 +58,7 @@ module "alb_waf" {
 }
 
 module "fargate_profile" {
-  source              = "./modules/ecs-worker"
+  source              = "./modules/fargate_profile"
 
   project_name        = var.project_name
   environment         = var.environment
@@ -76,38 +76,3 @@ module "fargate_profile" {
   db_host      = module.aurora.cluster_endpoint
 }
 
-output "eks_cluster_name" {
-  value = module.eks.cluster_name
-}
-
-output "ecr_backend_url" {
-  value = module.ecr.backend_repo_url
-}
-
-output "ecr_worker_url" {
-  value = module.ecr.worker_repo_url
-}
-
-output "rabbitmq_private_ip" {
-  value = module.rabbitmq_ec2.private_ip
-}
-
-output "aurora_endpoint" {
-  value = module.aurora.cluster_endpoint
-}
-
-output "alb_dns_name" {
-  value = module.alb_waf.alb_dns_name
-}
-
-output "vpc_id" {
-  value = module.vpc.vpc_id
-}
-
-output "ecs_cluster_name" {
-  value = module.ecs_worker.ecs_cluster_name
-}
-
-output "ecs_service_name" {
-  value = module.ecs_worker.ecs_service_name
-}
