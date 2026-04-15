@@ -1,4 +1,4 @@
-# To:     "Management UI from operator IP only - never use 0.0.0.0/0"
+# Management UI from operator IP only - never use 0.0.0.0/0
 resource "aws_security_group" "rabbitmq" {
   name        = "${var.project_name}-rabbitmq-sg"
   description = "RabbitMQ EC2 security group"
