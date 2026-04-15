@@ -391,55 +391,88 @@ jobs:
     needs: push-ecr
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
-    steps:
+    steps: 
       - name: Checkout
         uses: actions/checkout@v4
-
+      
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+        with: 
+              aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+              aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+              aws-region: ${{ env.AWS_REGION }}
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Get image tag
-        run: echo "TAG=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-
-      - name: Get ECR registry
+      - name: Set variables
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "REGISTRY=$ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com" >> $GITHUB_ENV
+         echo "TAG=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+         echo "REGISTRY=$ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com" >> $GITHUB_ENV
 
-      - name: Register new ECS task definition
+    # 🔥 STEP 1: Get CURRENT task definition from service
+      - name: Get current task definition
+        run: |
+         TASK_DEF_ARN=$(aws ecs describe-services \
+          --cluster ecommerce-worker-cluster \
+          --services ecommerce-worker \
+          --query "services[0].taskDefinition" \
+          --output text)
+
+         echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+
+    # 🔥 STEP 2: Fetch full task definition JSON
+      - name: Fetch task definition JSON
         run: |
           aws ecs describe-task-definition \
-            --task-definition ecommerce-worker \
-            --query taskDefinition > task-def.json
+          --task-definition $TASK_DEF_ARN \
+          --query taskDefinition > task-def.json
 
+    # 🔥 STEP 3: Update image
+      - name: Create new task definition
+        run: |
           NEW_IMAGE="$REGISTRY/$ECR_WORKER_REPO:$TAG"
 
           cat task-def.json | jq --arg IMAGE "$NEW_IMAGE" '
-            .containerDefinitions |= map(
-              if .name == "worker" then .image = $IMAGE else . end
+          .containerDefinitions |= map(
+            if .name == "worker" then .image = $IMAGE else . end
+          )
+          | del(
+              .taskDefinitionArn,
+              .revision,
+              .status,
+              .requiresAttributes,
+              .compatibilities,
+              .registeredAt,
+              .registeredBy
             )
-            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
           ' > new-task-def.json
 
-          aws ecs register-task-definition \
-            --cli-input-json file://new-task-def.json
+    # 🔥 STEP 4: Register new revision
+      - name: Register task definition
+        run: |
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+          --cli-input-json file://new-task-def.json \
+          --query "taskDefinition.taskDefinitionArn" \
+          --output text)
 
+          echo "NEW_TASK_DEF_ARN=$NEW_TASK_DEF_ARN" >> $GITHUB_ENV
+
+    # 🔥 STEP 5: Deploy
       - name: Deploy to ECS Service
         run: |
           aws ecs update-service \
-            --cluster ecommerce-worker-cluster \
-            --service ecommerce-worker \
-            --force-new-deployment
+          --cluster ecommerce-worker-cluster \
+          --service ecommerce-worker \
+          --task-definition $NEW_TASK_DEF_ARN \
+          --force-new-deployment
 
-      - name: Wait for deployment to stabilize
+      - name: Wait for deployment
         run: |
           aws ecs wait services-stable \
-            --cluster ecommerce-worker-cluster \
-            --services ecommerce-worker
+          --cluster ecommerce-worker-cluster \
+          --services ecommerce-worker
+
+
+    
