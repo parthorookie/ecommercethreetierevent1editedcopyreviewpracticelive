@@ -4,7 +4,7 @@ terraform {
   backend "s3" {
     bucket       = "parthoecom"
     key          = "terraform.tfstate"
-    region       = "ap-southeast-1"
+    region       = "ap-south-1"
     encrypt      = true
     use_lockfile = true
   }
