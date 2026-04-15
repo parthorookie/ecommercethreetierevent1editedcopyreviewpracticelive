@@ -24,9 +24,8 @@ env:
   GITHUB_REPO:      https://github.com/parthorookie/ecommercethreetierevent1editedcopyreviewpracticelive
 
 jobs:
-
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 1 — Terraform Plan
+  # JOB 1 — Terraform Reconcile & Plan
   # ═══════════════════════════════════════════════════════════════════════════
   terraform-plan:
     name: Terraform Plan
@@ -36,19 +35,15 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:      ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.10.0"
 
-      - name: Clean Terraform Cache
-        run: |
-           rm -rf .terraform
-           rm -f .terraform.lock.hcl
-          
       - name: Terraform Init
         working-directory: ${{ env.TF_DIR }}
         run: |
@@ -59,57 +54,49 @@ jobs:
             -backend-config="encrypt=true" \
             -backend-config="use_lockfile=true" 
 
-      - name: Reconcile Existing Resources (Skip Duplicates)
+      - name: Reconcile and Plan
         working-directory: ${{ env.TF_DIR }}
-        continue-on-error: true 
         run: |
-          echo "Starting State Reconciliation..."
+          echo "### 1. Starting State Reconciliation (Importing existing resources) ###"
           
-          # 1. Check & Import IAM Roles
+          # IAM Roles Check
           ROLES=("ecommerce-eks-cluster-role" "ecommerce-eks-node-role" "ecommerce-worker-task-execution-role" "ecommerce-worker-task-role" "ecommerce-rabbitmq-ec2-role")
           TF_PATHS=("module.eks.aws_iam_role.eks_cluster" "module.eks.aws_iam_role.eks_nodes" "module.fargate-profile.aws_iam_role.worker_task_execution" "module.fargate-profile.aws_iam_role.worker_task" "module.rabbitmq_ec2.aws_iam_role.rabbitmq_ec2")
 
           for i in "${!ROLES[@]}"; do
             if aws iam get-role --role-name "${ROLES[$i]}" >/dev/null 2>&1; then
               echo "Role ${ROLES[$i]} exists. Importing to ${TF_PATHS[$i]}..."
-              terraform import -var="db_password=${{ secrets.DB_PASSWORD }}" -var="operator_ip_cidr=${{ secrets.OPERATOR_IP_CIDR }}" "${TF_PATHS[$i]}" "${ROLES[$i]}" || echo "Already managed."
+              terraform import -var="db_password=${{ secrets.DB_PASSWORD }}" -var="operator_ip_cidr=${{ secrets.OPERATOR_IP_CIDR }}" "${TF_PATHS[$i]}" "${ROLES[$i]}" || echo "Skipping: Already managed in state."
             fi
           done
 
-          # 2. Check & Import ECR
+          # ECR Repositories Check
           REPOS=("ecommerce-backend" "ecommerce-worker" "ecommerce-frontend")
           TF_ECR=("module.ecr.aws_ecr_repository.backend" "module.ecr.aws_ecr_repository.worker" "module.ecr.aws_ecr_repository.frontend")
 
           for i in "${!REPOS[@]}"; do
             if aws ecr describe-repositories --repository-names "${REPOS[$i]}" >/dev/null 2>&1; then
               echo "ECR ${REPOS[$i]} exists. Importing..."
-              terraform import -var="db_password=${{ secrets.DB_PASSWORD }}" -var="operator_ip_cidr=${{ secrets.OPERATOR_IP_CIDR }}" "${TF_ECR[$i]}" "${REPOS[$i]}" || echo "Already managed."
+              terraform import -var="db_password=${{ secrets.DB_PASSWORD }}" -var="operator_ip_cidr=${{ secrets.OPERATOR_IP_CIDR }}" "${TF_ECR[$i]}" "${REPOS[$i]}" || echo "Skipping: Already managed in state."
             fi
           done
 
-          # 3. Check & Import Security Group
+          # Security Group Check
           ALB_SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=ecommerce-alb-sg" --query "SecurityGroups[0].GroupId" --output text)
-          if [ "$ALB_SG_ID" != "None" ]; then
+          if [ "$ALB_SG_ID" != "None" ] && [ -n "$ALB_SG_ID" ]; then
             echo "ALB SG exists ($ALB_SG_ID). Importing..."
-            terraform import -var="db_password=${{ secrets.DB_PASSWORD }}" -var="operator_ip_cidr=${{ secrets.OPERATOR_IP_CIDR }}" module.alb_waf.aws_security_group.alb "$ALB_SG_ID" || echo "Already managed."
+            terraform import -var="db_password=${{ secrets.DB_PASSWORD }}" -var="operator_ip_cidr=${{ secrets.OPERATOR_IP_CIDR }}" module.alb_waf.aws_security_group.alb "$ALB_SG_ID" || echo "Skipping: Already managed in state."
           fi
 
-
-
-      - name: Terraform Validate
-        working-directory: ${{ env.TF_DIR }}
-        run: terraform validate
-      - name: Terraform Plan
-        working-directory: ${{ env.TF_DIR }}
-        run: |
+          echo "### 2. Generating Fresh Plan ###"
           terraform plan \
             -var="region=${{ env.AWS_REGION }}" \
             -var="db_password=${{ secrets.DB_PASSWORD }}" \
             -var="project_name=ecommerce" \
             -var="environment=prod" \
             -var="operator_ip_cidr=${{ secrets.OPERATOR_IP_CIDR }}" \
-            -out=tfplan -detailed-exitcode
-        continue-on-error: true
+            -out=tfplan
+
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
@@ -141,13 +128,15 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:      ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.10.0"
+
       - name: Terraform Init
         working-directory: ${{ env.TF_DIR }}
         run: |
@@ -157,25 +146,28 @@ jobs:
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="encrypt=true" \
             -backend-config="use_lockfile=true"
+
       - name: Download plan
         uses: actions/download-artifact@v4
         with:
           name: tfplan
           path: ${{ env.TF_DIR }}
+
       - name: Terraform Apply
         working-directory: ${{ env.TF_DIR }}
         run: terraform apply -auto-approve tfplan
+
       - name: Capture Terraform outputs
         id: tf_out
         working-directory: ${{ env.TF_DIR }}
         run: |
-          echo "eks_cluster_name=$(terraform output -raw eks_cluster_name)"    >> $GITHUB_OUTPUT
-          echo "rabbitmq_ip=$(terraform output -raw rabbitmq_private_ip)"      >> $GITHUB_OUTPUT
+          echo "eks_cluster_name=$(terraform output -raw eks_cluster_name)"     >> $GITHUB_OUTPUT
+          echo "rabbitmq_ip=$(terraform output -raw rabbitmq_private_ip)"       >> $GITHUB_OUTPUT
           echo "rabbitmq_public_ip=$(terraform output -raw rabbitmq_public_ip)" >> $GITHUB_OUTPUT
-          echo "aurora_endpoint=$(terraform output -raw aurora_endpoint)"      >> $GITHUB_OUTPUT
-          echo "alb_dns_name=$(terraform output -raw alb_dns_name)"            >> $GITHUB_OUTPUT
-          echo "ecr_backend_url=$(terraform output -raw ecr_backend_url)"      >> $GITHUB_OUTPUT
-          echo "ecr_worker_url=$(terraform output -raw ecr_worker_url)"        >> $GITHUB_OUTPUT
+          echo "aurora_endpoint=$(terraform output -raw aurora_endpoint)"       >> $GITHUB_OUTPUT
+          echo "alb_dns_name=$(terraform output -raw alb_dns_name)"             >> $GITHUB_OUTPUT
+          echo "ecr_backend_url=$(terraform output -raw ecr_backend_url)"       >> $GITHUB_OUTPUT
+          echo "ecr_worker_url=$(terraform output -raw ecr_worker_url)"         >> $GITHUB_OUTPUT
           echo "aws_account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
           echo "vpc_id=$(terraform output -raw vpc_id 2>/dev/null || echo '')" >> $GITHUB_OUTPUT
 
