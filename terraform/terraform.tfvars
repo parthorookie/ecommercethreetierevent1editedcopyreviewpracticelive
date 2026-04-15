@@ -14,9 +14,7 @@ public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
 private_subnet_cidrs = ["10.0.3.0/24", "10.0.4.0/24"]
 availability_zones   = ["ap-south-1a", "ap-south-1b"]
 
-# ── Aurora PostgreSQL password ────────────────────────────────────────────────
-# Rules: min 8 chars, no spaces, no @ $ / characters
-db_password = "CHANGE_ME_StrongPass123"
+
 
 # ── RabbitMQ EC2 ──────────────────────────────────────────────────────────────
 rabbitmq_instance_type = "t3.medium"
@@ -27,10 +25,7 @@ rabbitmq_ami = "ami-0f58b397bc5c1f2e8"
 # IMPORTANT: must match GitHub secret RABBITMQ_PASSWORD
 rabbitmq_password = "CHANGE_ME_RabbitMQ_Pass123"
 
-# ── RabbitMQ public access fix ────────────────────────────────────────────────
-# Step 1: curl ifconfig.me
-# Step 2: replace below
-operator_ip_cidr = "YOUR.IP.ADDRESS/32"
+
 
 # ── EKS cluster ───────────────────────────────────────────────────────────────
 eks_node_instance_types = ["t3.medium"]
