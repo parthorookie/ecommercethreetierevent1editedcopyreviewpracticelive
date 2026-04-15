@@ -155,7 +155,7 @@ jobs:
             -var="project_name=ecommerce" \
             -var="environment=prod" \
             -var="operator_ip_cidr=${OPERATOR_IP}" \
-            -out=tfplan
+             terraform plan -var-file=... -out=tfplan
 
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
