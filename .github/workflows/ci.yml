@@ -108,7 +108,7 @@ jobs:
           fetch-depth: 0
 
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@master
+        uses: SonarSource/sonarqube-scan-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -118,20 +118,18 @@ jobs:
             -Dsonar.projectKey=parthorookie_ecommercethreetierevent1editedcopyreviewpracticelive
             -Dsonar.projectName="E-Commerce Platform"
             -Dsonar.sources=app
+            -Dsonar.exclusions=**/node_modules/**,**/coverage/**
+            -Dsonar.javascript.lcov.reportPaths=app/backend/coverage/lcov.info,app/worker/coverage/lcov.info
+
            
             
 
       - name: SonarQube Quality Gate
-        uses: SonarSource/sonarqube-quality-gate-action@master
+        uses: SonarSource/sonarqube-quality-gate-action@v1
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          with:
-          args: >
-           sonar.projectKey=parthorookie_ecommercethreetierevent1editedcopyreviewpracticelive
-           sonar.organization=parthorookie
-           sonar.projectName=E-Commerce Platform
-           sonar.sources=app
+        
            
            
 
