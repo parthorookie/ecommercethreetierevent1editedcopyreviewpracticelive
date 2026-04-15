@@ -57,8 +57,8 @@ module "alb_waf" {
   eks_sg_id         = module.eks.node_security_group_id
 }
 
-module "fargate_profile" {
-  source              = "./modules/fargate_profile"
+module "fargate-profile" {
+  source              = "./modules/fargate-profile"
 
   project_name        = var.project_name
   environment         = var.environment
