@@ -7,7 +7,11 @@ module "vpc" {
   private_subnet_cidrs = var.private_subnet_cidrs
   availability_zones   = var.availability_zones
 }
-
+module "ecr" {
+  source       = "./modules/ecr"
+  project_name = var.project_name
+  environment  = var.environment
+}
 
 module "eks" {
   source                  = "./modules/eks"
