@@ -35,7 +35,7 @@ resource "aws_rds_cluster" "aurora" {
   cluster_identifier      = "${var.project_name}-aurora-cluster"
   engine                  = "aurora-postgresql"
   engine_mode             = "provisioned"
-  engine_version          = "15.4"
+  engine_version          = "17"
   database_name           = "ecommerce"
   master_username         = "postgres"
   master_password         = var.db_password
