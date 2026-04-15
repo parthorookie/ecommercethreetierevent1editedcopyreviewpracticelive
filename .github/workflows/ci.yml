@@ -373,12 +373,16 @@ jobs:
       - name: Commit updated Helm values (GitOps)
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
+          TAG: ${{ steps.meta.outputs.sha_short }}
         run: |
           git config --global user.email "github-actions@github.com"
           git config --global user.name "github-actions"
           git add helm/ecommerce/values.yaml 
           git diff --staged --quiet || git commit -m "ci: update image tags to $TAG [skip ci]"
-              git push https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git HEAD:main
+          git remote remove origin
+          git remote add origin https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git
+           git push origin HEAD:main
+   
 
   ecs-deploy:
     name: Deploy Worker to ECS Fargate
