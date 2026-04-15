@@ -116,7 +116,7 @@ jobs:
           args: >
             -Dsonar.organization=parthorookie
             -Dsonar.projectKey=parthorookie_ecommercethreetierevent1editedcopyreviewpracticelive
-            -Dsonar.projectName="E-Commerce Platform"
+            -Dsonar.projectName=E-Commerce Platform
             -Dsonar.sources=app
             -Dsonar.exclusions=**/node_modules/**,**/coverage/**
             -Dsonar.javascript.lcov.reportPaths=app/backend/coverage/lcov.info,app/worker/coverage/lcov.info
