@@ -1,3 +1,15 @@
-output "fargate_profile_arn" {
-  value = aws_eks_fargate_profile.worker.arn
+output "ecs_cluster_name" {
+  value = aws_ecs_cluster.worker.name
+}
+
+output "ecs_service_name" {
+  value = aws_ecs_service.worker.name
+}
+
+output "task_definition_arn" {
+  value = aws_ecs_task_definition.worker.arn
+}
+
+output "security_group_id" {
+  value = aws_security_group.worker.id
 }
