@@ -415,52 +415,9 @@ jobs:
         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         echo "REGISTRY=$ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com" >> $GITHUB_ENV
 
-    # 🔥 STEP 1: Get cluster dynamically
-    - name: Get ECS cluster
-      run: |
-        CLUSTER_ARN=$(aws ecs list-clusters --query "clusterArns[0]" --output text)
+   
 
-        if [ "$CLUSTER_ARN" == "None" ]; then
-          echo "❌ No ECS cluster found"
-          exit 1
-        fi
-
-        CLUSTER_NAME=$(echo $CLUSTER_ARN | awk -F/ '{print $2}')
-        echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
-
-    # 🔥 STEP 2: Get service dynamically
-    - name: Get ECS service
-      run: |
-        SERVICE_ARN=$(aws ecs list-services \
-          --cluster $CLUSTER_NAME \
-          --query "serviceArns[0]" \
-          --output text)
-
-        if [ "$SERVICE_ARN" == "None" ]; then
-          echo "❌ No ECS service found in cluster $CLUSTER_NAME"
-          exit 1
-        fi
-
-        SERVICE_NAME=$(echo $SERVICE_ARN | awk -F/ '{print $3}')
-        echo "SERVICE_NAME=$SERVICE_NAME" >> $GITHUB_ENV
-
-    # 🔥 STEP 3: Get current task definition
-    - name: Get current task definition
-      run: |
-        TASK_DEF_ARN=$(aws ecs describe-services \
-          --cluster $CLUSTER_NAME \
-          --services $SERVICE_NAME \
-          --query "services[0].taskDefinition" \
-          --output text)
-
-        echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
-
-    # 🔥 STEP 4: Fetch task definition JSON
-    - name: Fetch task definition JSON
-      run: |
-        aws ecs describe-task-definition \
-          --task-definition $TASK_DEF_ARN \
-          --query taskDefinition > task-def.json
+    
 
     # 🔥 STEP 5: Update image
     - name: Create new task definition
@@ -482,30 +439,14 @@ jobs:
             )
         ' > new-task-def.json
 
-    # 🔥 STEP 6: Register new revision
-    - name: Register task definition
-      run: |
-        NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
-          --cli-input-json file://new-task-def.json \
-          --query "taskDefinition.taskDefinitionArn" \
-          --output text)
+    
 
-        echo "NEW_TASK_DEF_ARN=$NEW_TASK_DEF_ARN" >> $GITHUB_ENV
+       
 
-    # 🔥 STEP 7: Deploy
-    - name: Deploy to ECS Service
-      run: |
-        aws ecs update-service \
-          --cluster $CLUSTER_NAME \
-          --service $SERVICE_NAME \
-          --task-definition $NEW_TASK_DEF_ARN \
-          --force-new-deployment
+    
+    
 
-    - name: Wait for deployment
-      run: |
-        aws ecs wait services-stable \
-          --cluster $CLUSTER_NAME \
-          --services $SERVICE_NAME
+    
 
   
 
