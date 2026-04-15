@@ -1,3 +1,6 @@
+################################
+# GLOBAL
+################################
 variable "region" {
   description = "AWS region"
   type        = string
@@ -16,12 +19,18 @@ variable "environment" {
   default     = "prod"
 }
 
+################################
+# DATABASE
+################################
 variable "db_password" {
   description = "Aurora PostgreSQL master password"
   type        = string
   sensitive   = true
 }
 
+################################
+# NETWORKING (VPC)
+################################
 variable "vpc_cidr" {
   description = "VPC CIDR block"
   type        = string
@@ -46,6 +55,9 @@ variable "availability_zones" {
   default     = ["ap-south-1a", "ap-south-1b"]
 }
 
+################################
+# EKS CONFIG
+################################
 variable "eks_node_instance_types" {
   description = "EKS node instance types"
   type        = list(string)
@@ -53,23 +65,30 @@ variable "eks_node_instance_types" {
 }
 
 variable "eks_desired_size" {
-  type    = number
-  default = 2
+  description = "Desired node count"
+  type        = number
+  default     = 2
 }
 
 variable "eks_min_size" {
-  type    = number
-  default = 1
+  description = "Minimum node count"
+  type        = number
+  default     = 1
 }
 
 variable "eks_max_size" {
-  type    = number
-  default = 5
+  description = "Maximum node count"
+  type        = number
+  default     = 5
 }
 
+################################
+# RABBITMQ (EC2)
+################################
 variable "rabbitmq_instance_type" {
-  type    = string
-  default = "t3.medium"
+  description = "Instance type for RabbitMQ EC2"
+  type        = string
+  default     = "t3.medium"
 }
 
 variable "rabbitmq_ami" {
@@ -77,7 +96,47 @@ variable "rabbitmq_ami" {
   type        = string
   default     = "ami-0f58b397bc5c1f2e8"
 }
-variable "operator_ip_cidr" {
-  description = "Your public IP for RabbitMQ UI access e.g. 203.0.113.45/32"
+
+variable "rabbitmq_password" {
+  description = "RabbitMQ admin password"
   type        = string
+  sensitive   = true
+}
+
+variable "operator_ip_cidr" {
+  description = "Your public IP for RabbitMQ UI access (e.g. x.x.x.x/32)"
+  type        = string
+}
+
+################################
+# ECS FARGATE WORKER (NEW)
+################################
+variable "worker_cpu" {
+  description = "CPU units for ECS worker (256, 512, 1024)"
+  type        = number
+  default     = 512
+}
+
+variable "worker_memory" {
+  description = "Memory (MB) for ECS worker"
+  type        = number
+  default     = 1024
+}
+
+variable "worker_desired_count" {
+  description = "Number of ECS worker tasks"
+  type        = number
+  default     = 2
+}
+
+variable "worker_min_count" {
+  description = "Minimum worker tasks (for autoscaling later)"
+  type        = number
+  default     = 1
+}
+
+variable "worker_max_count" {
+  description = "Maximum worker tasks (for autoscaling later)"
+  type        = number
+  default     = 5
 }
