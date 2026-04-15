@@ -114,7 +114,7 @@ Your AWS user/role needs these policies:
 - AWSWAFFullAccess
 - IAMFullAccess
 - ElasticLoadBalancingFullAccess
-
+- AmazonECSFullAccess
 ---
 
 ## PHASE 1 — LOCAL SIMULATION WITH DOCKER COMPOSE
