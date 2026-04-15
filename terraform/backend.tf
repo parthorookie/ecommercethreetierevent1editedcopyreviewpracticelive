@@ -2,7 +2,7 @@ terraform {
   required_version = ">= 1.10.0"
 
   backend "s3" {
-    bucket       = "ecommerce-terraform-state-prod2"
+    bucket       = "ecommerce-terraform-state-prod-partho-001"
     key          = "terraform.tfstate"
     region       = "ap-south-1"
     encrypt      = true
