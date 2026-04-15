@@ -58,11 +58,22 @@ module "alb_waf" {
 }
 
 module "fargate_profile" {
-  source             = "./modules/fargate-profile"
-  project_name       = var.project_name
-  environment        = var.environment
-  cluster_name       = module.eks.cluster_name
-  private_subnet_ids = module.vpc.private_subnet_ids
+  source              = "./modules/ecs-worker"
+
+  project_name        = var.project_name
+  environment         = var.environment
+  aws_region          = var.region
+
+  vpc_id              = module.vpc.vpc_id
+  private_subnet_ids  = module.vpc.private_subnet_ids
+
+  worker_image        = module.ecr.worker_repo_url
+  worker_cpu          = var.worker_cpu
+  worker_memory       = var.worker_memory
+  worker_desired_count = var.worker_desired_count
+
+  rabbitmq_url = "amqp://admin:${var.rabbitmq_password}@${module.rabbitmq_ec2.private_ip}:5672"
+  db_host      = module.aurora.cluster_endpoint
 }
 
 output "eks_cluster_name" {
@@ -91,4 +102,12 @@ output "alb_dns_name" {
 
 output "vpc_id" {
   value = module.vpc.vpc_id
+}
+
+output "ecs_cluster_name" {
+  value = module.ecs_worker.ecs_cluster_name
+}
+
+output "ecs_service_name" {
+  value = module.ecs_worker.ecs_service_name
 }
