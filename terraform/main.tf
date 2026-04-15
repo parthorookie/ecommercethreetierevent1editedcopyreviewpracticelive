@@ -8,11 +8,6 @@ module "vpc" {
   availability_zones   = var.availability_zones
 }
 
-module "ecr" {
-  source       = "./modules/ecr"
-  project_name = var.project_name
-  environment  = var.environment
-}
 
 module "eks" {
   source                  = "./modules/eks"
