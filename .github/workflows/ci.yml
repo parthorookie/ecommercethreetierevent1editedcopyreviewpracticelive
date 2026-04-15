@@ -368,7 +368,7 @@ jobs:
           TAG: ${{ steps.meta.outputs.sha_short }}
         run: |
           sed -i "s|tag:.*|tag: \"$TAG\"|g" helm/ecommerce/values.yaml
-          sed -i "s|tag:.*|tag: \"$TAG\"|g" helm/worker/values.yaml
+          
 
       - name: Commit updated Helm values (GitOps)
         env:
