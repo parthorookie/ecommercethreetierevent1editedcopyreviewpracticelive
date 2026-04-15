@@ -114,7 +114,7 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         run: |
           terraform init \
-            -backend-config="bucket=ecommerce-terraform-state-prod" \
+            -backend-config="ecommerce-terraform-state-prod2" \
             -backend-config="key=prod/terraform.tfstate" \
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="encrypt=true" \
