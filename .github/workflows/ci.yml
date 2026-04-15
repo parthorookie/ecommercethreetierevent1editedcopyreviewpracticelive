@@ -128,8 +128,8 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           with:
           args: >
-           sonar.projectKey=ecommerce-platform
-           sonar.organization=rookiep
+           sonar.projectKey=parthorookie_ecommercethreetierevent1editedcopyreviewpracticelive
+           sonar.organization=parthorookie
            sonar.projectName=E-Commerce Platform
            sonar.sources=app
            sonar.exclusions=**/node_modules/**,**/coverage/**
