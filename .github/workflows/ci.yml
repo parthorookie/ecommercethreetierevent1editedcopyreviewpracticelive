@@ -114,7 +114,8 @@ jobs:
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         with:
           args: >
-            -Dsonar.projectKey=ecommerce-platform
+            -Dsonar.organization=parthorookie
+            -Dsonar.projectKey=parthorookie_ecommercethreetierevent1editedcopyreviewpracticelive
             -Dsonar.projectName="E-Commerce Platform"
             -Dsonar.sources=app
             -Dsonar.exclusions=**/node_modules/**,**/coverage/**
