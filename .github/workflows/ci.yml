@@ -118,7 +118,7 @@ jobs:
             -Dsonar.projectKey=parthorookie_ecommercethreetierevent1editedcopyreviewpracticelive
             -Dsonar.projectName="E-Commerce Platform"
             -Dsonar.sources=app
-            -Dsonar.exclusions=**/node_modules/**,**/coverage/**
+           
             
 
       - name: SonarQube Quality Gate
@@ -132,7 +132,7 @@ jobs:
            sonar.organization=parthorookie
            sonar.projectName=E-Commerce Platform
            sonar.sources=app
-           sonar.exclusions=**/node_modules/**,**/coverage/**
+           
            
 
   # ─────────────────────────────────────────────
