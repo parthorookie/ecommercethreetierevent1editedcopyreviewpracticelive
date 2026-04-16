@@ -1,36 +1,37 @@
-# Management UI from operator IP only - never use 0.0.0.0/0
+# RabbitMQ Security Group
 resource "aws_security_group" "rabbitmq" {
-  name        = "${var.project_name}-rabbitmq-sg"
-  description = "RabbitMQ EC2 security group"
+  name        = "${var.project_name}-${var.environment}-rabbitmq"
+  description = "RabbitMQ security group for ${var.project_name}-${var.environment}"
   vpc_id      = var.vpc_id
 
-  # AMQP — EKS nodes only (backend + worker pods connect internally)
+  # AMQP port - Used by backend and worker applications
   ingress {
     from_port       = 5672
     to_port         = 5672
     protocol        = "tcp"
     security_groups = [var.eks_sg_id]
-    description     = "AMQP from EKS nodes"
+    description     = "RabbitMQ AMQP from EKS nodes"
   }
 
-  # Management UI — EKS nodes (internal) + your operator IP (browser access)
+  # Management UI (RabbitMQ Dashboard) - From EKS nodes
   ingress {
     from_port       = 15672
     to_port         = 15672
     protocol        = "tcp"
     security_groups = [var.eks_sg_id]
-    description     = "Management UI from EKS nodes"
+    description     = "RabbitMQ Management UI from EKS nodes"
   }
 
+  # Management UI - From your operator IP (for browser access)
   ingress {
     from_port   = 15672
     to_port     = 15672
     protocol    = "tcp"
     cidr_blocks = [var.operator_ip_cidr]
-    description = "Management UI from operator IP only — never use 0.0.0.0/0"
+    description = "RabbitMQ Management UI from operator IP"
   }
 
-  # Prometheus metrics — EKS nodes only (Prometheus pod scrapes internally)
+  # Prometheus metrics exporter
   ingress {
     from_port       = 15692
     to_port         = 15692
@@ -81,10 +82,7 @@ resource "aws_instance" "rabbitmq" {
   ami           = var.ami_id
   instance_type = var.instance_type
 
-  # FIX 1: public subnet so the instance gets an internet-routable public IPv4
-  subnet_id = var.public_subnet_id
-
-  # FIX 2: assign public IPv4 so http://<public-ip>:15672 works in your browser
+  subnet_id                   = var.public_subnet_id
   associate_public_ip_address = true
 
   vpc_security_group_ids = [aws_security_group.rabbitmq.id]
@@ -93,6 +91,7 @@ resource "aws_instance" "rabbitmq" {
   user_data = base64encode(<<-USERDATA
     #!/bin/bash
     set -e
+
     yum update -y
     yum install -y docker
     systemctl enable docker
@@ -112,8 +111,10 @@ resource "aws_instance" "rabbitmq" {
 
     sleep 30
 
+    # Enable Prometheus plugin
     docker exec rabbitmq rabbitmq-plugins enable rabbitmq_prometheus
 
+    # Setup exchanges and queues for DLQ + retry pattern
     docker exec rabbitmq rabbitmqadmin declare exchange \
       name=orders.dlx type=direct durable=true
 
@@ -137,6 +138,8 @@ resource "aws_instance" "rabbitmq" {
 
     docker exec rabbitmq rabbitmqadmin declare binding \
       source=orders.dlx destination=orders.dlq routing_key=orders.dlq
+
+    echo "RabbitMQ setup completed successfully"
   USERDATA
   )
 
