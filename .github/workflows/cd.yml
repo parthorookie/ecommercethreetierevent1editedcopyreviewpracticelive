@@ -26,7 +26,7 @@ env:
 jobs:
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 1 — Terraform Plan
+  # JOB 1 — Terraform Plan (for review / PRs)
   # ═══════════════════════════════════════════════════════════════════════════
   terraform-plan:
     name: Terraform Plan
@@ -63,18 +63,11 @@ jobs:
             -var="operator_ip_cidr=${OPERATOR_IP}" \
             -out=tfplan
 
-      - name: Upload plan artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan
-          path: ${{ env.TF_DIR }}/tfplan
-          retention-days: 1
-
   # ═══════════════════════════════════════════════════════════════════════════
-  # JOB 2 — Terraform Apply with Smart Import for Existing Resources
+  # JOB 2 — Terraform Apply with Forced Import of Existing Resources
   # ═══════════════════════════════════════════════════════════════════════════
   terraform-apply:
-    name: Terraform Apply
+    name: Terraform Apply (with Import)
     runs-on: ubuntu-latest
     needs: terraform-plan
     if: github.ref == 'refs/heads/main' && (github.event.inputs.action == 'apply' || github.event_name == 'push')
@@ -108,95 +101,63 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         run: terraform init -reconfigure
 
-      - name: Import Existing Resources (Idempotent)
+      - name: Import Existing Resources (Force Idempotency)
         working-directory: ${{ env.TF_DIR }}
         env:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           OPERATOR_IP: ${{ secrets.OPERATOR_IP_CIDR }}
         run: |
-          echo "=== Importing existing resources to prevent 'already exists' errors ==="
+          echo "=== Importing existing resources to avoid 'already exists' errors ==="
 
-          # Helper function
-          import_if_exists() {
-            local tf_addr=$1
-            local aws_id=$2
-            local check_cmd=$3
+          import_resource() {
+            local tf_address="$1"
+            local aws_identifier="$2"
+            local check_command="$3"
 
-            echo "Checking: $tf_addr"
-            if eval "$check_cmd" >/dev/null 2>&1; then
-              if ! terraform state show "$tf_addr" >/dev/null 2>&1; then
-                echo "→ Importing $tf_addr ($aws_id)"
+            echo "→ Checking $tf_address"
+            if eval "$check_command" >/dev/null 2>&1; then
+              if ! terraform state show "$tf_address" >/dev/null 2>&1; then
+                echo "→ Importing $tf_address"
                 terraform import \
                   -var="db_password=${DB_PASSWORD}" \
                   -var="operator_ip_cidr=${OPERATOR_IP}" \
-                  "$tf_addr" "$aws_id" || echo "Import failed or already imported"
+                  "$tf_address" "$aws_identifier" || echo "Import skipped or already done"
               else
-                echo "→ Already in state"
+                echo "→ Already managed in state"
               fi
             else
-              echo "→ Does not exist in AWS → Terraform will create"
+              echo "→ Resource does not exist in AWS → will be created"
             fi
           }
 
-          # 1. IAM Roles
-          import_if_exists "module.eks.aws_iam_role.eks_cluster" \
-            "ecommerce-eks-cluster-role" \
-            "aws iam get-role --role-name ecommerce-eks-cluster-role"
+          # IAM Roles
+          import_resource "module.eks.aws_iam_role.eks_cluster"                  "ecommerce-eks-cluster-role"          "aws iam get-role --role-name ecommerce-eks-cluster-role"
+          import_resource "module.eks.aws_iam_role.eks_nodes"                    "ecommerce-eks-node-role"             "aws iam get-role --role-name ecommerce-eks-node-role"
+          import_resource "module.fargate-profile.aws_iam_role.worker_task_execution" "ecommerce-worker-task-execution-role" "aws iam get-role --role-name ecommerce-worker-task-execution-role"
+          import_resource "module.fargate-profile.aws_iam_role.worker_task"      "ecommerce-worker-task-role"          "aws iam get-role --role-name ecommerce-worker-task-role"
+          import_resource "module.rabbitmq_ec2.aws_iam_role.rabbitmq_ec2"        "ecommerce-rabbitmq-ec2-role"         "aws iam get-role --role-name ecommerce-rabbitmq-ec2-role"
 
-          import_if_exists "module.eks.aws_iam_role.eks_nodes" \
-            "ecommerce-eks-node-role" \
-            "aws iam get-role --role-name ecommerce-eks-node-role"
+          # ECR Repositories
+          import_resource "module.ecr.aws_ecr_repository.backend"   "ecommerce-backend"   "aws ecr describe-repositories --repository-names ecommerce-backend"
+          import_resource "module.ecr.aws_ecr_repository.worker"    "ecommerce-worker"    "aws ecr describe-repositories --repository-names ecommerce-worker"
+          import_resource "module.ecr.aws_ecr_repository.frontend"  "ecommerce-frontend"  "aws ecr describe-repositories --repository-names ecommerce-frontend"
 
-          import_if_exists "module.fargate-profile.aws_iam_role.worker_task_execution" \
-            "ecommerce-worker-task-execution-role" \
-            "aws iam get-role --role-name ecommerce-worker-task-execution-role"
+          # Target Groups
+          TG_BACKEND=$(aws elbv2 describe-target-groups --names ecommerce-backend-tg --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
+          [ "$TG_BACKEND" != "None" ] && [ -n "$TG_BACKEND" ] && import_resource "module.alb_waf.aws_lb_target_group.backend" "$TG_BACKEND" "true"
 
-          import_if_exists "module.fargate-profile.aws_iam_role.worker_task" \
-            "ecommerce-worker-task-role" \
-            "aws iam get-role --role-name ecommerce-worker-task-role"
+          TG_FRONTEND=$(aws elbv2 describe-target-groups --names ecommerce-frontend-tg --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
+          [ "$TG_FRONTEND" != "None" ] && [ -n "$TG_FRONTEND" ] && import_resource "module.alb_waf.aws_lb_target_group.frontend" "$TG_FRONTEND" "true"
 
-          import_if_exists "module.rabbitmq_ec2.aws_iam_role.rabbitmq_ec2" \
-            "ecommerce-rabbitmq-ec2-role" \
-            "aws iam get-role --role-name ecommerce-rabbitmq-ec2-role"
+          # WAF WebACL
+          import_resource "module.alb_waf.aws_wafv2_web_acl.main" "prod-waf" "aws wafv2 list-web-acls --scope REGIONAL --query 'WebACLs[?Name==\`prod-waf\`].ARN' --output text"
 
-          # 2. ECR Repositories
-          import_if_exists "module.ecr.aws_ecr_repository.backend" \
-            "ecommerce-backend" \
-            "aws ecr describe-repositories --repository-names ecommerce-backend"
+          # DB Subnet Group
+          import_resource "module.aurora.aws_db_subnet_group.aurora" "ecommerce-aurora-subnet-group" "aws rds describe-db-subnet-groups --db-subnet-group-name ecommerce-aurora-subnet-group"
 
-          import_if_exists "module.ecr.aws_ecr_repository.worker" \
-            "ecommerce-worker" \
-            "aws ecr describe-repositories --repository-names ecommerce-worker"
-
-          import_if_exists "module.ecr.aws_ecr_repository.frontend" \
-            "ecommerce-frontend" \
-            "aws ecr describe-repositories --repository-names ecommerce-frontend"
-
-          # 3. Target Groups
-          TG_BACKEND_ARN=$(aws elbv2 describe-target-groups --names ecommerce-backend-tg --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
-          if [ -n "$TG_BACKEND_ARN" ] && [ "$TG_BACKEND_ARN" != "None" ]; then
-            import_if_exists "module.alb_waf.aws_lb_target_group.backend" "$TG_BACKEND_ARN" "true"
-          fi
-
-          TG_FRONTEND_ARN=$(aws elbv2 describe-target-groups --names ecommerce-frontend-tg --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "")
-          if [ -n "$TG_FRONTEND_ARN" ] && [ "$TG_FRONTEND_ARN" != "None" ]; then
-            import_if_exists "module.alb_waf.aws_lb_target_group.frontend" "$TG_FRONTEND_ARN" "true"
-          fi
-
-          # 4. WAF WebACL
-          import_if_exists "module.alb_waf.aws_wafv2_web_acl.main" \
-            "prod-waf" \
-            "aws wafv2 list-web-acls --scope REGIONAL --query 'WebACLs[?Name==\`prod-waf\`].ARN' --output text"
-
-          # 5. DB Subnet Group
-          import_if_exists "module.aurora.aws_db_subnet_group.aurora" \
-            "ecommerce-aurora-subnet-group" \
-            "aws rds describe-db-subnet-groups --db-subnet-group-name ecommerce-aurora-subnet-group"
-
-          # 6. ALB Security Group
-          import_if_exists "module.vpc.aws_security_group.alb" \
-            "ecommerce-alb-sg" \
-            "aws ec2 describe-security-groups --filters Name=group-name,Values=ecommerce-alb-sg --query 'SecurityGroups[0].GroupId' --output text"
+          # ALB Security Group
+          SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=ecommerce-alb-sg" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "")
+          [ "$SG_ID" != "None" ] && [ -n "$SG_ID" ] && import_resource "module.vpc.aws_security_group.alb" "$SG_ID" "true"
 
       - name: Terraform Apply
         working-directory: ${{ env.TF_DIR }}
@@ -204,7 +165,7 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           OPERATOR_IP: ${{ secrets.OPERATOR_IP_CIDR }}
         run: |
-          echo "=== Generating Fresh Plan ==="
+          echo "=== Running Terraform Apply ==="
           terraform plan \
             -var="region=${{ env.AWS_REGION }}" \
             -var="db_password=${DB_PASSWORD}" \
@@ -213,7 +174,6 @@ jobs:
             -var="operator_ip_cidr=${OPERATOR_IP}" \
             -out=tfplan
 
-          echo "=== Applying Terraform Changes ==="
           terraform apply -auto-approve tfplan || EXIT_CODE=$? && \
             if [ "$EXIT_CODE" -ne 0 ] && [ "$EXIT_CODE" -ne 2 ]; then exit $EXIT_CODE; fi
 
@@ -230,6 +190,10 @@ jobs:
           echo "ecr_worker_url=$(terraform output -raw ecr_worker_url 2>/dev/null || echo '')"         >> $GITHUB_OUTPUT
           echo "aws_account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
           echo "vpc_id=$(terraform output -raw vpc_id 2>/dev/null || echo '')"  >> $GITHUB_OUTPUT
+
+  # Keep your existing jobs: install-cluster-tools, configure-argocd, deploy-supporting-resources, and verify-deployment unchanged.
+  # Just ensure they depend on `terraform-apply` where appropriate.
+
 
   # Keep your existing JOB 3 (install-cluster-tools), JOB 4 (configure-argocd), 
   # JOB 5 (deploy-supporting-resources), and JOB 6 (verify-deployment) unchanged.
